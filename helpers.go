@@ -22,29 +22,54 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-func CreateCertificateRequestConfiguration() *x509.CertificateRequest {
-	return &x509.CertificateRequest{
-		Subject: pkix.Name{
-			CommonName:   "example.com",
-			Organization: []string{"Organization Name"},
-			Country:      []string{"US"},
-		},
-		DNSNames:       []string{"example.com", "www.example.com"},
-		EmailAddresses: []string{"email@example.com"},
-	}
-}
+var (
+	oidExtensionKeyUsage         = []int{2, 5, 29, 15}
+	oidExtensionExtendedKeyUsage = []int{2, 5, 29, 37}
+	oidExtensionBasicConstraints = []int{2, 5, 29, 19}
+	oidExtensionSubjectAltName   = []int{2, 5, 29, 17}
+)
 
-func CreateCertificateRequestContent() {
-	csrBytes, err := x509.CreateCertificateRequest(rand.Reader, csrConfig, privateKey)
-	if err != nil {
-		fmt.Println("Failed to create CSR:", err)
-		return
+// CreateCertificateRequestConfiguration creates a certificate request configuration.
+func CreateCertificateRequestConfiguration(name, ip string) *x509.CertificateRequest {
+	return &x509.CertificateRequest{
+		SignatureAlgorithm: x509.SHA256WithRSA,
+		PublicKeyAlgorithm: x509.RSA,
+		Subject: pkix.Name{
+			CommonName: name,
+		},
+		ExtraExtensions: []pkix.Extension{
+			{
+				Id:       oidExtensionBasicConstraints,
+				Critical: true,
+				Value:    []byte("CA:FALSE"),
+			},
+			{
+				Id:       oidExtensionKeyUsage,
+				Critical: true,
+				Value:    []byte("digitalSignature, keyEncipherment"),
+			},
+			{
+				Id:       oidExtensionExtendedKeyUsage,
+				Critical: true,
+				Value:    []byte("serverAuth"),
+			},
+			{
+				Id:       oidExtensionSubjectAltName,
+				Critical: true,
+				Value:    []byte(ip),
+			},
+		},
 	}
 }
 
 // GeneratePrivateKey generates a new RSA private key with the default length 2048.
 func GeneratePrivateKey() (*rsa.PrivateKey, error) {
 	return rsa.GenerateKey(rand.Reader, DefaultLengthForRSA)
+}
+
+// CreateCertificateRequestContent generates a CSR based on the provided template and private key.
+func CreateCertificateRequestContent(template *x509.CertificateRequest, privateKey any) (csr []byte, err error) {
+	return x509.CreateCertificateRequest(rand.Reader, template, privateKey)
 }
 
 func CreateCACert(opt CertOptions) (*KeyPairArtifacts, error) {

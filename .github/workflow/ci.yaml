@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.21
+
+    - name: Build and release
+      run: |
+        go install github.com/goreleaser/goreleaser@v1.22.1
+        goreleaser release --rm-dist
+  
+  goreleaser:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: "ghcr.io"
+      IMAGE_NAME: "google/addlicense"
+      - name: Run GoReleaser
+        uses:  goreleaser/goreleaser-action@v4
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
