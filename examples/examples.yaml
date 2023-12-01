@@ -1,0 +1,91 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: my-job
+  namespace: default
+spec:
+  completions: 1
+  template:
+    spec:
+      serviceAccountName: my-serviceaccount        
+      containers:
+      - name: cert-generator
+        image: promacanthus1/certs:dd23aa4
+        args: ["-n","example","-s","my-signer","-S","my-certificate"]
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      restartPolicy: Never
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-deployment
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: my-container
+        image: nginx:latest
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: cert-volume
+          mountPath: /app/certs
+        ports:
+        - containerPort: 80
+      volumes:
+      - name: cert-volume
+        secret:
+          secretName: my-certificate
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-serviceaccount
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: my-role
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests"]
+  verbs: ["get", "list", "watch", "update", "approve", "deny"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: my-role-binding
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: my-serviceaccount
+  namespace: default
+roleRef:
+  kind: Role
+  name: my-role
+  apiGroup: rbac.authorization.k8s.io

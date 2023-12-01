@@ -24,10 +24,9 @@ func init() {
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	rootCmd.Flags().StringVarP(&commonName, "name", "n", "default.name", "The common name of the certificate signing request")
 	rootCmd.Flags().StringVarP(&signerName, "signer", "s", "default.signer", "The signer name of the certificate signing request")
-	rootCmd.Flags().StringVarP(&secretName, "secret", "s", "default.certs", "The secret name to save certificates data")
+	rootCmd.Flags().StringVarP(&secretName, "secret", "S", "default.certs", "The secret name to save certificates data")
 }
 
 var (

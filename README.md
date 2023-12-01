@@ -2,6 +2,21 @@
 
 Generate certificates.
 
+## Usage
+
+```shell
+Auto generate certificates for kubernetes, and save them in kubernetes secret.
+
+Usage:
+  cert [flags]
+
+Flags:
+  -h, --help            help for cert
+  -n, --name string     The common name of the certificate signing request (default "default.name")
+  -S, --secret string   The secret name to save certificates data (default "default.certs")
+  -s, --signer string   The signer name of the certificate signing request (default "default.signer")
+```
+
 ## OpenSSL
 
 著名的开源密码学程序库和工具包，几乎支持所有公开的加密算法和协议，已经成为了事实上的标准，许多应用软件都会使用它作为底层库来实现 TLS 功能，包括常用的 Web 服务器 Apache、Nginx 等。
