@@ -10,7 +10,7 @@ spec:
       serviceAccountName: my-serviceaccount        
       containers:
       - name: cert-generator
-        image: promacanthus1/certs:29e73ec
+        image: promacanthus1/certs:80c66ed
         args: ["-n","example","-s","example.com/my-signer","-S","my-certificate"]
         env:
         - name: POD_IP

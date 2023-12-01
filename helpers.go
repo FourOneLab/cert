@@ -59,6 +59,7 @@ func CreateCertificateRequestConfiguration(name, ip string) *x509.CertificateReq
 				Value:    []byte(ip),
 			},
 		},
+		DNSNames: []string{ip},
 	}
 }
 
