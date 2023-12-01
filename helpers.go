@@ -37,28 +37,28 @@ func CreateCertificateRequestConfiguration(name, ip string) *x509.CertificateReq
 		Subject: pkix.Name{
 			CommonName: name,
 		},
-		ExtraExtensions: []pkix.Extension{
-			{
-				Id:       oidExtensionBasicConstraints,
-				Critical: true,
-				Value:    []byte("CA:FALSE"),
-			},
-			{
-				Id:       oidExtensionKeyUsage,
-				Critical: true,
-				Value:    []byte("digitalSignature, keyEncipherment"),
-			},
-			{
-				Id:       oidExtensionExtendedKeyUsage,
-				Critical: true,
-				Value:    []byte("serverAuth"),
-			},
-			{
-				Id:       oidExtensionSubjectAltName,
-				Critical: true,
-				Value:    []byte(ip),
-			},
-		},
+		// ExtraExtensions: []pkix.Extension{
+		// 	{
+		// 		Id:       oidExtensionBasicConstraints,
+		// 		Critical: true,
+		// 		Value:    []byte("CA:FALSE"),
+		// 	},
+		// 	{
+		// 		Id:       oidExtensionKeyUsage,
+		// 		Critical: true,
+		// 		Value:    []byte("digitalSignature, keyEncipherment"),
+		// 	},
+		// 	{
+		// 		Id:       oidExtensionExtendedKeyUsage,
+		// 		Critical: true,
+		// 		Value:    []byte("serverAuth"),
+		// 	},
+		// 	{
+		// 		Id:       oidExtensionSubjectAltName,
+		// 		Critical: true,
+		// 		Value:    []byte(ip),
+		// 	},
+		// },
 		DNSNames: []string{ip},
 	}
 }
@@ -103,10 +103,13 @@ func CreateCACert(opt CertOptions) (*KeyPairArtifacts, error) {
 	// encode certificate and private key
 	certPEM, err := pemEncoding(der, PEM_TYPE_CERTIFICATE)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to encoding certificate, error: %v", err)
 	}
 
 	keyPEM, err := pemKeyEncoding(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encoding key, error: %v", err)
+	}
 
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {

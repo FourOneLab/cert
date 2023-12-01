@@ -23,5 +23,6 @@ jobs:
       - name: Build and push Docker image
         run: |
           commit_id=$(echo ${{ github.sha }} | cut -c1-7)
-          docker build -t promacanthus1/certs:${commit_id}   .
-          docker push promacanthus1/certs:${commit_id} 
+          docker build -t promacanthus1/certs:latest .
+          docker tag promacanthus1/certs:latest promacanthus1/certs:${commit_id} 
+          docker push promacanthus1/certs:${commit_id}

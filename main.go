@@ -9,10 +9,11 @@ import (
 
 	"github.com/spf13/cobra"
 	certv1 "k8s.io/api/certificates/v1"
+	v1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func init() {
@@ -24,9 +25,9 @@ func init() {
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
-	rootCmd.Flags().StringVarP(&commonName, "name", "n", "default.name", "The common name of the certificate signing request")
-	rootCmd.Flags().StringVarP(&signerName, "signer", "s", "default.signer", "The signer name of the certificate signing request")
-	rootCmd.Flags().StringVarP(&secretName, "secret", "S", "default.certs", "The secret name to save certificates data")
+	rootCmd.Flags().StringVarP(&commonName, "name", "n", "example", "The common name of the certificate signing request")
+	rootCmd.Flags().StringVarP(&signerName, "signer", "s", "example.com/signer-name", "The signer name of the certificate signing request")
+	rootCmd.Flags().StringVarP(&secretName, "secret", "S", "my-certificate", "The secret name to save certificates data")
 }
 
 var (
@@ -64,9 +65,30 @@ func run(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to encode CSR content, error: %v", err)
 	}
 	// 4. Create the kubernetes CertificateSigningRequest object (consider about the kubernetes version)
+	// KUBECONFIG Environment Variable just used for debug.
+	kubeconfig, err := clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+	if err != nil {
+		log.Fatalf("failed to get kubeconfig, error: %v", err)
+	}
+	kubeconfig.UserAgent = "k8s-cert-manager"
+	client, err := kubernetes.NewForConfig(kubeconfig)
+	if err != nil {
+		log.Fatalf("failed to create client, error: %v", err)
+	}
+	csrName := fmt.Sprintf("csr-%s", ipAddr)
+	ctx := context.Background()
+	oldCSR, err := client.CertificatesV1().CertificateSigningRequests().Get(ctx, csrName, metav1.GetOptions{})
+	if err != nil {
+		log.Fatalf("failed to get CSR, error: %v", err)
+	}
+	if oldCSR != nil {
+		if err := client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{}); err != nil {
+			log.Fatalf("failed to delete CSR, error: %v", err)
+		}
+	}
 	csr := &certv1.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("csr-%s", ipAddr),
+			Name: csrName,
 		},
 		Spec: certv1.CertificateSigningRequestSpec{
 			Request:    pemRequest,
@@ -81,27 +103,24 @@ func run(cmd *cobra.Command, args []string) {
 			},
 		},
 	}
-	kubeconfig, err := restclient.InClusterConfig()
-	if err != nil {
-		log.Fatalf("failed to get kubeconfig, error: %v", err)
-	}
-	kubeconfig.UserAgent = "k8s-cert-manager"
-	client, err := kubernetes.NewForConfig(kubeconfig)
-	if err != nil {
-		log.Fatalf("failed to create client, error: %v", err)
-	}
-	ctx := context.Background()
-	csr, err = client.CertificatesV1().CertificateSigningRequests().
-		Create(ctx, csr, metav1.CreateOptions{})
+	csr, err = client.CertificatesV1().CertificateSigningRequests().Create(ctx, csr, metav1.CreateOptions{})
 	if err != nil {
 		log.Fatalf("failed to create CSR, error: %v", err)
 	}
 	// 5. Approve the CertificateSigningRequest object
+	csr.Status.Conditions = append(csr.Status.Conditions, v1.CertificateSigningRequestCondition{
+		Type:           v1.CertificateApproved,
+		Reason:         "Cert generator approved",
+		Message:        "This CSR was approved by cert generator",
+		Status:         "True",
+		LastUpdateTime: metav1.Now(),
+	})
 	csr, err = client.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.GetName(), csr, metav1.UpdateOptions{})
 	if err != nil {
 		log.Fatalf("failed to update CSR, error: %v", err)
 	}
 	// 6. Get the certificate from the CertificateSigningRequest object .Status.Certificate
+	// TODO: Certificate is empty
 	cert := csr.Status.Certificate
 	certPEM, err := pemEncoding(cert, PEM_TYPE_CERTIFICATE)
 	if err != nil {
@@ -114,6 +133,15 @@ func run(cmd *cobra.Command, args []string) {
 	// 7. Get the CA from the kubeconfig object
 	ca := kubeconfig.DeepCopy().CAData
 	// 8. Save the certificate and the private key to a kubernetes secret
+	oldSecret, err := client.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		log.Fatalf("failed to get secret, error: %v", err)
+	}
+	if oldSecret != nil {
+		if err := client.CoreV1().Secrets(namespace).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil {
+			log.Fatalf("failed to delete secret, error: %v", err)
+		}
+	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -125,7 +153,7 @@ func run(cmd *cobra.Command, args []string) {
 			"ca.pem":   ca,
 		},
 	}
-	if _, err := client.CoreV1().Secrets("").Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+	if _, err := client.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
 		log.Fatalf("failed to create secret, error: %v", err)
 	}
 }
