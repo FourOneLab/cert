@@ -1,338 +1,140 @@
-package cert
+package main
 
 import (
-    "bytes"
-    "context"
-    "crypto/rand"
-    "crypto/rsa"
-    "crypto/x509"
-    "crypto/x509/pkix"
-    "encoding/pem"
-    "errors"
-    "fmt"
-    "io"
-    "math/big"
-    "os"
-    "path/filepath"
-    "time"
+	"context"
+	"fmt"
+	"log"
 
-    corev1 "k8s.io/api/core/v1"
-    kerrors "k8s.io/apimachinery/pkg/api/errors"
-    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-    "k8s.io/client-go/kubernetes"
+	"os"
+
+	"github.com/spf13/cobra"
+	certv1 "k8s.io/api/certificates/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 )
 
-const (
-    PEM_TYPE_CERTIFICATE     = "CERTIFICATE"
-    PEM_TYPE_RSA_PRIVATE_KEY = "RSA PRIVATE KEY"
+func init() {
+	// Here you will define your flags and configuration settings.
+	// Cobra supports persistent flags, which, if defined here,
+	// will be global for your application.
 
-    // file name
-    CaCert     = "ca_cert.pem"
-    ServerCert = "server_cert.pem"
-    ServerKey  = "server_key.pem"
-    ClientCert = "client_cert.pem"
-    ClientKey  = "client_key.pem"
+	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.cert.yaml)")
 
-    defaultTLSPath          = "./"
-    defaultPrefix           = "default"
-    defaultCACommonName     = "default-CA"
-    defaultServerCommonName = "default-server"
-    defaultClientCommonName = "default-client"
+	// Cobra also supports local flags, which will only run
+	// when this action is called directly.
+	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	rootCmd.Flags().StringVarP(&commonName, "name", "n", "default.name", "The common name of the certificate signing request")
+	rootCmd.Flags().StringVarP(&signerName, "signer", "s", "default.signer", "The signer name of the certificate signing request")
+	rootCmd.Flags().StringVarP(&secretName, "secret", "s", "default.certs", "The secret name to save certificates data")
+}
+
+var (
+	commonName string
+	signerName string
+	secretName string
+
+	namespace string
+	ipAddr    string
 )
 
-// CertOptions is cert option.
-type CertOptions struct {
-    Begin, End time.Time
-    IsClient   bool
-    DNSNames   []string
-
-    // CA
-    CAName         string
-    CAOrganization []string
-
-    // Cert
-    CommonName string
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "cert",
+	Short: "Auto generate certificates for kubernetes",
+	Long:  `Auto generate certificates for kubernetes, and save them in kubernetes secret.`,
+	Run:   run,
 }
 
-// KeyPairArtifacts is cert struct
-type KeyPairArtifacts struct {
-    Cert    *x509.Certificate
-    Key     *rsa.PrivateKey
-    CertPEM []byte
-    KeyPEM  []byte
+func run(cmd *cobra.Command, args []string) {
+	// 1. Generate the CSR configuration
+	template := CreateCertificateRequestConfiguration(commonName, ipAddr)
+	// 2. Generate the private key
+	privateKey, err := GeneratePrivateKey()
+	if err != nil {
+		log.Fatalf("failed to generate private key, error: %v", err)
+	}
+	// 3. Generate the CSR content by private key
+	request, err := CreateCertificateRequestContent(template, privateKey)
+	if err != nil {
+		log.Fatalf("failed to generate CSR content, error: %v", err)
+	}
+	// 4. Create the kubernetes CertificateSigningRequest object (consider about the kubernetes version)
+	csr := &certv1.CertificateSigningRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("csr-%s", ipAddr),
+		},
+		Spec: certv1.CertificateSigningRequestSpec{
+			Request:    request,
+			SignerName: signerName,
+			Groups: []string{
+				"system:authenticated",
+			},
+			Usages: []certv1.KeyUsage{
+				certv1.UsageKeyEncipherment,
+				certv1.UsageDigitalSignature,
+				certv1.UsageServerAuth,
+			},
+		},
+	}
+	kubeconfig, err := restclient.InClusterConfig()
+	if err != nil {
+		log.Fatalf("failed to get kubeconfig, error: %v", err)
+	}
+	kubeconfig.UserAgent = "k8s-cert-manager"
+	client, err := kubernetes.NewForConfig(kubeconfig)
+	if err != nil {
+		log.Fatalf("failed to create client, error: %v", err)
+	}
+	ctx := context.Background()
+	csr, err = client.CertificatesV1().CertificateSigningRequests().
+		Create(ctx, csr, metav1.CreateOptions{})
+	if err != nil {
+		log.Fatalf("failed to create CSR, error: %v", err)
+	}
+	// 5. Approve the CertificateSigningRequest object
+	csr, err = client.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.GetName(), csr, metav1.UpdateOptions{})
+	if err != nil {
+		log.Fatalf("failed to update CSR, error: %v", err)
+	}
+	// 6. Get the certificate from the CertificateSigningRequest object .Status.Certificate
+	cert := csr.Status.Certificate
+	certPEM, keyPEM, err := pemEncode(cert, privateKey)
+	if err != nil {
+		log.Fatalf("failed to encode certificate and private key, error: %v", err)
+	}
+	// 7. Get the CA from the kubeconfig object
+	ca := kubeconfig.DeepCopy().CAData
+	// 8. Save the certificate and the private key to a kubernetes secret
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace, // from kubernetes downward API
+		},
+		Data: map[string][]byte{
+			"cert.pem": certPEM,
+			"key.pem":  keyPEM,
+			"ca.pem":   ca,
+		},
+	}
+	if _, err := client.CoreV1().Secrets("").Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		log.Fatalf("failed to create secret, error: %v", err)
+	}
 }
 
-func CreateCACert(opt CertOptions) (*KeyPairArtifacts, error) {
-    tmpl := &x509.Certificate{
-        SerialNumber: big.NewInt(0),
-        Subject: pkix.Name{
-            CommonName:   opt.CAName,
-            Organization: opt.CAOrganization,
-        },
-        DNSNames:              opt.DNSNames,
-        NotBefore:             opt.Begin,
-        NotAfter:              opt.End,
-        KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
-        BasicConstraintsValid: true,
-        IsCA:                  true,
-    }
-
-    // RSA 推荐密钥长度 2048
-    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-    if err != nil {
-        return nil, fmt.Errorf("failed to generating key, error: %v", err)
-    }
-
-    // template == parent ,so generate self-signed certificate
-    der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, privateKey.PublicKey, privateKey)
-    if err != nil {
-        return nil, fmt.Errorf("failed to creating self-signed certificate, error: %v", err)
-  }
-
-    // encode certificate and private key
-    certPEM, keyPEM, err := pemEncode(der, privateKey)
-    if err != nil {
-        return nil, fmt.Errorf("failed t0 encoding PEM, error: %v", err)
-    }
-
-    cert, err := x509.ParseCertificate(der)
-    if err != nil {
-        return nil, fmt.Errorf("failed to parsing certificate, error: %v", err)
-    }
-    return &KeyPairArtifacts{
-        Cert:    cert,
-        Key:     privateKey,
-        CertPEM: certPEM,
-        KeyPEM:  keyPEM,
-    }, nil
+// Execute adds all child commands to the root command and sets flags appropriately.
+// This is called by main.main(). It only needs to happen once to the rootCmd.
+func Execute() {
+	err := rootCmd.Execute()
+	if err != nil {
+		os.Exit(1)
+	}
 }
 
-  func CreateCertPEM(opt CertOptions, ca *KeyPairArtifacts) ([]byte, []byte, error) {
-    sn, err := genSerialNum()
-    if err != nil {
-        return nil, nil, err
-    }
+func main() {
+	ipAddr = os.Getenv(POD_IP)
+	namespace = os.Getenv(NAMESPACE)
 
-    dnsNames := opt.DNSNames
-    eks := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-    if opt.IsClient {
-        eks = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
-        dnsNames = nil
-    }
-
-    tmpl := &x509.Certificate{
-        SerialNumber:          sn,
-        Subject:               pkix.Name{CommonName: opt.CommonName},
-        DNSNames:              dnsNames,
-      NotBefore:             opt.Begin,
-      NotAfter:              opt.End,
-      KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageDataEncipherment,
-      ExtKeyUsage:           eks,
-      BasicConstraintsValid: true,
-  }
-
-    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-    if err != nil {
-        return nil, nil, fmt.Errorf("failed to generating key, error: %v", err)
-    }
-    der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, privateKey.Public(), privateKey)
-    if err != nil {
-        return nil, nil, fmt.Errorf("failed to create certificate, error: %v", err)
-    }
-    certPEM, keyPEM, err := pemEncode(der, privateKey)
-    if err != nil {
-        return nil, nil, fmt.Errorf("failed t0 encoding PEM, error: %v", err)
-    }
-    return certPEM, keyPEM, nil
-}
-
-  func pemEncode(certificateDER []byte, key *rsa.PrivateKey) ([]byte, []byte, error) {
-    certBuf := &bytes.Buffer{}
-    if err := pem.Encode(certBuf, &pem.Block{Type: PEM_TYPE_CERTIFICATE, Bytes: certificateDER}); err != nil {
-        return nil, nil, fmt.Errorf("failed to encoding cert, error: %v", err)
-    }
-
-    keyBuf := &bytes.Buffer{}
-    if err := pem.Encode(keyBuf, &pem.Block{Type: PEM_TYPE_RSA_PRIVATE_KEY, Bytes: x509.MarshalPKCS1PrivateKey(key)}); err != nil {
-        return nil, nil, fmt.Errorf("failed to encoding key, error: %v", err)
-    }
-    return certBuf.Bytes(), keyBuf.Bytes(), nil
-}
-
-  func genSerialNum() (*big.Int, error) {
-    serialNumLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-    serialNum, err := rand.Int(rand.Reader, serialNumLimit)
-    if err != nil {
-        return nil, fmt.Errorf("failed to generate serial number, error: %v", err)
-    }
-    return serialNum, nil
-}
-
-  type SecretOptions struct {
-    Name         string
-    Namespace    string
-    CertPrefix   string
-    CertDuration time.Duration
-}
-
-  func CreateSecretWithTLS(ctx context.Context, client kubernetes.Interface, opts SecretOptions) error {
-    secret, err := client.CoreV1().Secrets(opts.Namespace).Get(ctx, opts.Name, metav1.GetOptions{})
-    if err != nil && !kerrors.IsNotFound(err) {
-        return err
-    }
-    if err == nil {
-        if _, ok := secret.Data[CaCert]; !ok {
-            return errors.New("CA Certificate is not exist")
-        }
-        if _, ok := secret.Data[ServerCert]; !ok {
-            return errors.New("Server Certificate is not exist")
-        }
-        if _, ok := secret.Data[ServerKey]; !ok {
-            return errors.New("Server Private Key is not exist")
-        }
-        if _, ok := secret.Data[ClientCert]; !ok {
-            return errors.New("Client Certificate is not exist")
-        }
-        if _, ok := secret.Data[ClientKey]; !ok {
-            return errors.New("Client Private key is not exist")
-        }
-        return nil
-    }
-
-    c, err := generateCerts(opts.CertDuration)
-    if err != nil {
-        return err
-    }
-
-    secret = &corev1.Secret{
-        ObjectMeta: metav1.ObjectMeta{
-            Name:        opts.Name,
-            Namespace:   opts.Namespace,
-            Labels:      map[string]string{"": ""},
-            Annotations: map[string]string{"": ""},
-            Finalizers:  []string{},
-        },
-        Data: map[string][]byte{
-            addPrefix(opts.CertPrefix, CaCert):     c.Kpa.CertPEM,
-            addPrefix(opts.CertPrefix, ServerCert): c.ServerCert,
-            addPrefix(opts.CertPrefix, ServerKey):  c.ServerKey,
-            addPrefix(opts.CertPrefix, ClientCert): c.ClientCert,
-            addPrefix(opts.CertPrefix, ClientKey):  c.ClientKey,
-        },
-    }
-
-    _, err = client.CoreV1().Secrets(opts.Namespace).Create(ctx, secret, metav1.CreateOptions{})
-    return err
-}
-
-  func WriteCertsToFile(prefix string, certsDuration time.Duration) error {
-    c, err := generateCerts(certsDuration)
-    if err != nil {
-        return err
-    }
-
-    caCertFile := filepath.Join(defaultTLSPath, addPrefix(prefix, CaCert))
-    serverCertFile := filepath.Join(defaultTLSPath, addPrefix(prefix, ServerCert))
-    serverKeyFile := filepath.Join(defaultTLSPath, addPrefix(prefix, ServerKey))
-    clientCertFile := filepath.Join(defaultTLSPath, addPrefix(prefix, ClientCert))
-    clientKeyFile := filepath.Join(defaultTLSPath, addPrefix(prefix, ClientKey))
-
-    if err := WriteAndSyncFile(caCertFile, c.Kpa.CertPEM, os.FileMode(0644)); err != nil {
-        return err
-    }
-    if err := WriteAndSyncFile(serverCertFile, c.Kpa.CertPEM, os.FileMode(0644)); err != nil {
-        return err
-    }
-    if err := WriteAndSyncFile(serverKeyFile, c.Kpa.CertPEM, os.FileMode(0644)); err != nil {
-        return err
-    }
-    if err := WriteAndSyncFile(clientCertFile, c.Kpa.CertPEM, os.FileMode(0644)); err != nil {
-        return err
-    }
-    if err := WriteAndSyncFile(clientKeyFile, c.Kpa.CertPEM, os.FileMode(0644)); err != nil {
-        return err
-    }
-    return nil
-}
-
-  func WriteAndSyncFile(filename string, data []byte, perm os.FileMode) error {
-    f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-    if err != nil {
-        return err
-    }
-    n, err := f.Write(data)
-    if err == nil && n < len(data) {
-        err = io.ErrShortWrite
-    }
-    if err == nil {
-        err = f.Sync()
-    }
-    if err == nil {
-        err = f.Close()
-    }
-    return err
-}
-
-  type Certs struct {
-    Kpa                                          *KeyPairArtifacts
-    ServerCert, ServerKey, ClientCert, ClientKey []byte
-}
-
-  func generateCerts(certDuration time.Duration) (*Certs, error) {
-    begin := time.Now().Add(-time.Hour)
-    end := begin.Add(certDuration)
-
-    // CA
-    caOpts := CertOptions{
-        Begin:          begin,
-        End:            end,
-        DNSNames:       []string{defaultCACommonName},
-        CAName:         defaultCACommonName,
-        CAOrganization: []string{defaultCACommonName},
-        CommonName:     defaultCACommonName,
-    }
-    kpa, err := CreateCACert(caOpts)
-    if err != nil {
-        return nil, err
-    }
-
-    // Server
-    serverOpts := CertOptions{
-        Begin:      begin,
-        End:        end,
-        DNSNames:   []string{defaultServerCommonName},
-        CommonName: defaultServerCommonName,
-    }
-    serverCert, serverKey, err := CreateCertPEM(serverOpts, kpa)
-    if err != nil {
-        return nil, err
-    }
-
-    // Client
-    clientOpts := CertOptions{
-        Begin:      begin,
-        End:        end,
-        IsClient:   true,
-        DNSNames:   []string{defaultClientCommonName},
-        CommonName: defaultClientCommonName,
-    }
-    clientCert, clientKey, err := CreateCertPEM(clientOpts, kpa)
-    if err != nil {
-        return nil, err
-    }
-
-    return &Certs{
-        Kpa:        kpa,
-        ServerCert: serverCert,
-        ServerKey:  serverKey,
-        ClientCert: clientCert,
-        ClientKey:  clientKey,
-    }, nil
-}
-
-  func addPrefix(prefix, filename string) string {
-    if len(prefix) == 0 {
-        prefix = defaultPrefix
-    }
-    return fmt.Sprintf("%s_%s", prefix, filename)
+	Execute()
 }
