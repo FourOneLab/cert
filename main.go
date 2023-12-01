@@ -59,13 +59,17 @@ func run(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("failed to generate CSR content, error: %v", err)
 	}
+	pemRequest, err := pemEncoding(request, PEM_TYPE_CERTIFICATE_REQUEST)
+	if err != nil {
+		log.Fatalf("failed to encode CSR content, error: %v", err)
+	}
 	// 4. Create the kubernetes CertificateSigningRequest object (consider about the kubernetes version)
 	csr := &certv1.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("csr-%s", ipAddr),
 		},
 		Spec: certv1.CertificateSigningRequestSpec{
-			Request:    request,
+			Request:    pemRequest,
 			SignerName: signerName,
 			Groups: []string{
 				"system:authenticated",
@@ -99,9 +103,13 @@ func run(cmd *cobra.Command, args []string) {
 	}
 	// 6. Get the certificate from the CertificateSigningRequest object .Status.Certificate
 	cert := csr.Status.Certificate
-	certPEM, keyPEM, err := pemEncode(cert, privateKey)
+	certPEM, err := pemEncoding(cert, PEM_TYPE_CERTIFICATE)
 	if err != nil {
-		log.Fatalf("failed to encode certificate and private key, error: %v", err)
+		log.Fatalf("failed to encode certificate, error: %v", err)
+	}
+	keyPEM, err := pemKeyEncoding(privateKey)
+	if err != nil {
+		log.Fatalf("failed to encode private key, error: %v", err)
 	}
 	// 7. Get the CA from the kubeconfig object
 	ca := kubeconfig.DeepCopy().CAData

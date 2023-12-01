@@ -100,10 +100,12 @@ func CreateCACert(opt CertOptions) (*KeyPairArtifacts, error) {
 	}
 
 	// encode certificate and private key
-	certPEM, keyPEM, err := pemEncode(der, privateKey)
+	certPEM, err := pemEncoding(der, PEM_TYPE_CERTIFICATE)
 	if err != nil {
-		return nil, fmt.Errorf("failed t0 encoding PEM, error: %v", err)
+		return nil, err
 	}
+
+	keyPEM, err := pemKeyEncoding(privateKey)
 
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
@@ -149,24 +151,31 @@ func CreateCertPEM(opt CertOptions, ca *KeyPairArtifacts) ([]byte, []byte, error
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create certificate, error: %v", err)
 	}
-	certPEM, keyPEM, err := pemEncode(der, privateKey)
+	certPEM, err := pemEncoding(der, PEM_TYPE_CERTIFICATE)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed t0 encoding PEM, error: %v", err)
+		return nil, nil, fmt.Errorf("failed to encoding certificate, error: %v", err)
+	}
+	keyPEM, err := pemKeyEncoding(privateKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encoding key, error: %v", err)
 	}
 	return certPEM, keyPEM, nil
 }
 
-func pemEncode(certificateDER []byte, key *rsa.PrivateKey) ([]byte, []byte, error) {
-	certBuf := &bytes.Buffer{}
-	if err := pem.Encode(certBuf, &pem.Block{Type: PEM_TYPE_CERTIFICATE, Bytes: certificateDER}); err != nil {
-		return nil, nil, fmt.Errorf("failed to encoding cert, error: %v", err)
-	}
-
+func pemKeyEncoding(key *rsa.PrivateKey) ([]byte, error) {
 	keyBuf := &bytes.Buffer{}
 	if err := pem.Encode(keyBuf, &pem.Block{Type: PEM_TYPE_RSA_PRIVATE_KEY, Bytes: x509.MarshalPKCS1PrivateKey(key)}); err != nil {
-		return nil, nil, fmt.Errorf("failed to encoding key, error: %v", err)
+		return nil, fmt.Errorf("failed to encoding key, error: %v", err)
 	}
-	return certBuf.Bytes(), keyBuf.Bytes(), nil
+	return keyBuf.Bytes(), nil
+}
+
+func pemEncoding(rawData []byte, requestType string) ([]byte, error) {
+	buf := &bytes.Buffer{}
+	if err := pem.Encode(buf, &pem.Block{Type: requestType, Bytes: rawData}); err != nil {
+		return nil, fmt.Errorf("failed to encoding PEM, error: %v", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func genSerialNum() (*big.Int, error) {
