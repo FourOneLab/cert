@@ -121,9 +121,11 @@ func run(cmd *cobra.Command, args []string) {
 			Name: csrName,
 		},
 		Spec: certv1.CertificateSigningRequestSpec{
-			Request:    pemRequest,
+			Request: pemRequest,
+			// TODO: implement a CA, https://kubernetes.io/zh-cn/docs/tasks/tls/managing-tls-in-a-cluster/
 			SignerName: signerName,
 			Groups: []string{
+				// TODO: use other group
 				"system:authenticated",
 			},
 			Usages: []certv1.KeyUsage{
