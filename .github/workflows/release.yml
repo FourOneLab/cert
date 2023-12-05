@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feat*
 
 jobs:
   build-and-push:
@@ -26,3 +25,4 @@ jobs:
           docker build -t promacanthus1/certs:latest .
           docker tag promacanthus1/certs:latest promacanthus1/certs:${commit_id} 
           docker push promacanthus1/certs:${commit_id}
+          docker push promacanthus1/certs:latest

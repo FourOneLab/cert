@@ -50,6 +50,9 @@ var rootCmd = &cobra.Command{
 }
 
 func run(cmd *cobra.Command, args []string) {
+	ctx := cmd.Context()
+	stopCh := make(chan struct{}, 1)
+
 	// 1. Generate the CSR configuration
 	template := CreateCertificateRequestConfiguration(commonName, ipAddr)
 	log.Println("Generating CSR configuration")
@@ -90,17 +93,28 @@ func run(cmd *cobra.Command, args []string) {
 	log.Println("New kubernetes client")
 
 	csrName := fmt.Sprintf("csr-%s", ipAddr)
-	ctx := cmd.Context()
-	oldCSR, err := client.CertificatesV1().CertificateSigningRequests().Get(ctx, csrName, metav1.GetOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		log.Fatalf("failed to get CSR, error: %v", err)
-	}
-	if oldCSR != nil {
-		if err := client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{}); err != nil {
-			log.Fatalf("failed to delete CSR, error: %v", err)
+	checkAndDeleteCSRFunc := func() {
+		log.Println("Checking if the old CSR exists")
+		oldCSR, err := client.CertificatesV1().CertificateSigningRequests().Get(ctx, csrName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Println("The old CSR does not exist")
+				stopCh <- struct{}{}
+			}
+			// log and retry.
+			log.Printf("failed to get CSR, error: %v", err)
+			return
+		}
+		if oldCSR != nil {
+			if err := client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{}); err != nil {
+				log.Fatalf("failed to delete CSR, error: %v", err)
+				return
+			}
+			log.Println("delete the old CSR")
+			stopCh <- struct{}{}
 		}
 	}
-	log.Println("Checking if the old CSR exists")
+	wait.Until(checkAndDeleteCSRFunc, 5*time.Second, stopCh)
 
 	csr := &certv1.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{
@@ -138,18 +152,21 @@ func run(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to update CSR, error: %v", err)
 	}
 
-	stop := make(chan struct{})
-	wait.Until(func() {
+	waitUntilCertFunc := func() {
 		log.Println("wait until certificate generated")
 		csr, err = client.CertificatesV1().CertificateSigningRequests().Get(ctx, csrName, metav1.GetOptions{})
-		if err != nil && !apierrors.IsNotFound(err) {
+		if err != nil {
 			log.Printf("failed to get CSR, error: %v", err)
+			return
 		}
-		if len(csr.Status.Certificate) != 0 {
-			log.Println("Certificate generated")
-			stop <- struct{}{}
+		if len(csr.Status.Certificate) == 0 {
+			log.Println("certificate is not generated yet")
+			return
 		}
-	}, 10*time.Second, stop)
+		log.Println("Certificate generated")
+		stopCh <- struct{}{}
+	}
+	wait.Until(waitUntilCertFunc, 5*time.Second, stopCh)
 
 	// 6. Get the certificate from the CertificateSigningRequest object .Status.Certificate
 	certPEM, err := pemEncoding(csr.Status.DeepCopy().Certificate, PEM_TYPE_CERTIFICATE)
